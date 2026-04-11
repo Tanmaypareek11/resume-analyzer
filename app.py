@@ -24,7 +24,7 @@ with st.spinner("⏳ Loading datasets... please wait"):
 #-------------------------------------------------------
 
 # ✅ Step 3 — Safety check inside get_ml_model()
-if not os.path.exists("processed_resumes.csv"):
+if not os.path.exists("data\processed_resumes.csv"):
     download_datasets()
 
 # -------------------------------------------------------
