@@ -4,8 +4,8 @@ import os
 import gdown
 
 # ── Paste your File IDs here ──
-RESUMES_FILE_ID = "paste_your_resumes_file_id_here"
-JOBS_FILE_ID    = "paste_your_jobs_file_id_here"
+RESUMES_FILE_ID = "1OMYvC6AZl7GUJ2jUNDRUICujf4eKk527"
+JOBS_FILE_ID    = "1ZuC71FDC6VB5xh34Dvm-UqwSOAOhCJw0"
 
 def download_datasets():
 
