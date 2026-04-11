@@ -5,7 +5,31 @@ import re
 import pdfplumber
 import pickle
 import os
+import nltk
 
+# -------------------------------------------------------
+# STEP 1 — Download NLTK data (needed on server)
+# -------------------------------------------------------
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+
+# -------------------------------------------------------
+# STEP 2 — Download datasets from Google Drive FIRST
+#           before any other code runs
+# -------------------------------------------------------
+from load_data import download_datasets
+
+with st.spinner("⏳ Loading datasets... please wait"):
+    download_datasets()
+#-------------------------------------------------------
+
+# ✅ Step 3 — Safety check inside get_ml_model()
+if not os.path.exists("processed_resumes.csv"):
+    download_datasets()
+
+# -------------------------------------------------------
+# STEP 4 — Now import everything else
+# -------------------------------------------------------
 from skill_extraction import extract_skills
 from matcher import skill_match, missing_skills
 from model import train_model, load_model, predict_category, find_matching_jobs
@@ -30,7 +54,6 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
 
-/* ── Root & Background ── */
 html, body, [data-testid="stAppViewContainer"] {
     background-color: #0A0A0F;
     color: #E8E8F0;
@@ -45,17 +68,13 @@ html, body, [data-testid="stAppViewContainer"] {
 
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { display: none; }
-
-/* ── Hide Streamlit Branding ── */
 #MainMenu, footer, header { visibility: hidden; }
 
-/* ── Main Content ── */
 .block-container {
     padding: 2rem 3rem 4rem 3rem;
     max-width: 1100px;
 }
 
-/* ── Hero Section ── */
 .hero-badge {
     display: inline-block;
     background: linear-gradient(135deg, #6C47FF20, #00D4FF20);
@@ -91,7 +110,6 @@ html, body, [data-testid="stAppViewContainer"] {
     line-height: 1.7;
 }
 
-/* ── Cards ── */
 .glass-card {
     background: linear-gradient(135deg, #ffffff08, #ffffff04);
     border: 1px solid #ffffff12;
@@ -119,7 +137,6 @@ html, body, [data-testid="stAppViewContainer"] {
     margin-bottom: 1rem;
 }
 
-/* ── File Uploader ── */
 [data-testid="stFileUploader"] {
     background: #ffffff06 !important;
     border: 2px dashed #6C47FF50 !important;
@@ -133,11 +150,8 @@ html, body, [data-testid="stAppViewContainer"] {
     background: #6C47FF0A !important;
 }
 
-[data-testid="stFileUploader"] label {
-    color: #A78BFA !important;
-}
+[data-testid="stFileUploader"] label { color: #A78BFA !important; }
 
-/* ── Text Area ── */
 [data-testid="stTextArea"] textarea {
     background: #ffffff06 !important;
     border: 1px solid #ffffff15 !important;
@@ -153,7 +167,6 @@ html, body, [data-testid="stAppViewContainer"] {
     box-shadow: 0 0 0 2px #6C47FF20 !important;
 }
 
-/* ── Button ── */
 [data-testid="stButton"] > button {
     background: linear-gradient(135deg, #6C47FF, #4F46E5) !important;
     color: white !important;
@@ -174,7 +187,6 @@ html, body, [data-testid="stAppViewContainer"] {
     box-shadow: 0 8px 30px #6C47FF60 !important;
 }
 
-/* ── Metric Cards ── */
 [data-testid="stMetric"] {
     background: linear-gradient(135deg, #ffffff08, #ffffff04) !important;
     border: 1px solid #ffffff12 !important;
@@ -197,10 +209,7 @@ html, body, [data-testid="stAppViewContainer"] {
     color: #E8E8F0 !important;
 }
 
-/* ── Score Bar ── */
-.score-bar-wrap {
-    margin: 0.6rem 0 1.2rem 0;
-}
+.score-bar-wrap { margin: 0.6rem 0 1.2rem 0; }
 
 .score-bar-label {
     display: flex;
@@ -211,10 +220,7 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'DM Sans', sans-serif;
 }
 
-.score-bar-label span:last-child {
-    color: #E8E8F0;
-    font-weight: 500;
-}
+.score-bar-label span:last-child { color: #E8E8F0; font-weight: 500; }
 
 .score-bar-bg {
     background: #ffffff10;
@@ -229,7 +235,6 @@ html, body, [data-testid="stAppViewContainer"] {
     transition: width 1s ease;
 }
 
-/* ── Skill Tags ── */
 .skill-tag {
     display: inline-block;
     background: #6C47FF20;
@@ -243,19 +248,9 @@ html, body, [data-testid="stAppViewContainer"] {
     font-weight: 500;
 }
 
-.skill-tag.missing {
-    background: #FF4D4D15;
-    border-color: #FF4D4D40;
-    color: #FF8080;
-}
+.skill-tag.missing { background: #FF4D4D15; border-color: #FF4D4D40; color: #FF8080; }
+.skill-tag.job { background: #00D4FF15; border-color: #00D4FF40; color: #67E8F9; }
 
-.skill-tag.job {
-    background: #00D4FF15;
-    border-color: #00D4FF40;
-    color: #67E8F9;
-}
-
-/* ── Result Banner ── */
 .result-excellent {
     background: linear-gradient(135deg, #00875A15, #00875A08);
     border: 1px solid #00875A50;
@@ -270,7 +265,7 @@ html, body, [data-testid="stAppViewContainer"] {
 
 .result-good {
     background: linear-gradient(135deg, #92400E15, #92400E08);
-    border: 1px solid #D97706 50;
+    border: 1px solid #D9770650;
     border-radius: 14px;
     padding: 1.2rem 1.5rem;
     color: #FCD34D;
@@ -292,14 +287,8 @@ html, body, [data-testid="stAppViewContainer"] {
     text-align: center;
 }
 
-/* ── Divider ── */
-.custom-divider {
-    border: none;
-    border-top: 1px solid #ffffff10;
-    margin: 2rem 0;
-}
+.custom-divider { border: none; border-top: 1px solid #ffffff10; margin: 2rem 0; }
 
-/* ── Expander ── */
 [data-testid="stExpander"] {
     background: #ffffff06 !important;
     border: 1px solid #ffffff10 !important;
@@ -311,16 +300,9 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'DM Sans', sans-serif !important;
 }
 
-/* ── Spinner ── */
 [data-testid="stSpinner"] { color: #6C47FF !important; }
+[data-testid="stAlert"] { border-radius: 12px !important; font-family: 'DM Sans', sans-serif !important; }
 
-/* ── Warning / Info ── */
-[data-testid="stAlert"] {
-    border-radius: 12px !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
-
-/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: #0A0A0F; }
 ::-webkit-scrollbar-thumb { background: #6C47FF50; border-radius: 10px; }
@@ -364,10 +346,14 @@ def skill_tags(skills, tag_type=""):
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
+    # ✅ Double check datasets exist before training
+    if not os.path.exists("data/processed_resumes.csv"):
+        download_datasets()
+
     if os.path.exists("resume_model.pkl"):
         return load_model()
     else:
-        st.info("Training ML model for the first time...")
+        st.info("⏳ Training ML model for the first time — please wait 2-3 minutes...")
         pipeline, _ = train_model()
         return pipeline
 
