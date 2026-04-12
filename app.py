@@ -21,6 +21,7 @@ st.set_page_config(
 # -------------------------------------------------------
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
 
 # -------------------------------------------------------
 # ✅ STEP 3 — Download datasets from Google Drive
@@ -338,17 +339,23 @@ def skill_tags(skills, tag_type=""):
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
-    if not os.path.exists("data/processed_resumes.csv"):
-        download_datasets()
-    if os.path.exists("resume_model.pkl"):
-        return load_model()
-    else:
-        pipeline, _ = train_model()
-        return pipeline
+    """Load or train the ML classification model."""
+    try:
+        if not os.path.exists("data/processed_resumes.csv"):
+            download_datasets()
+        if os.path.exists("resume_model.pkl"):
+            return load_model()
+        else:
+            pipeline, _ = train_model()
+            return pipeline
+    except Exception as e:
+        st.error(f"❌ Failed to load ML model: {e}")
+        return None
 
 
 @st.cache_resource
 def get_bert_model():
+    """Load sentence-transformers BERT model."""
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 
@@ -402,35 +409,46 @@ if analyze_btn:
 
         with st.spinner("Analyzing your resume with AI..."):
 
-            # Read PDF
+            # ── Read PDF ──
             resume_text = ""
-            with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        resume_text += text
+            try:
+                with pdfplumber.open(uploaded_file) as pdf:
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text:
+                            resume_text += text
+            except Exception as e:
+                st.error(f"❌ Could not read PDF: {e}")
+                st.stop()
+
+            if not resume_text.strip():
+                st.warning("⚠️ Could not extract text from the PDF. Please ensure it is not a scanned image.")
+                st.stop()
 
             resume_clean = clean_text(resume_text)
             job_clean = clean_text(job_text)
 
-            # ML Model
+            # ── ML Model ──
             ml_model = get_ml_model()
-            predicted_category, confidence = predict_category(resume_clean, ml_model)
+            if ml_model is not None:
+                predicted_category, confidence = predict_category(resume_clean, ml_model)
+            else:
+                predicted_category, confidence = "Unknown", 0.0
 
-            # Skills
+            # ── Skills ──
             resume_skills = extract_skills(resume_clean)
             job_skills = extract_skills(job_clean)
             score = skill_match(resume_skills, job_skills)
             missing = missing_skills(resume_skills, job_skills)
 
-            # TF-IDF
+            # ── TF-IDF ──
             vectorizer = TfidfVectorizer()
             tfidf_matrix = vectorizer.fit_transform([resume_clean, job_clean])
             tfidf_score = round(
                 cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0] * 100, 2
             )
 
-            # BERT
+            # ── BERT ──
             bert_model = get_bert_model()
             r_emb = bert_model.encode(resume_clean)
             j_emb = bert_model.encode(job_clean)
@@ -438,7 +456,7 @@ if analyze_btn:
                 cosine_similarity([r_emb], [j_emb])[0][0] * 100, 2
             )
 
-            # Normalize & Final Score
+            # ── Normalize & Final Score ──
             tfidf_normalized = min(tfidf_score * 5, 100)
             final_score = (
                 (0.15 * tfidf_normalized) +
@@ -509,8 +527,9 @@ if analyze_btn:
 
         matched_jobs = find_matching_jobs(predicted_category, top_n=3)
         if not matched_jobs.empty:
-            for i, row in matched_jobs.iterrows():
-                with st.expander(f"Similar Job {i + 1} — {predicted_category}"):
+            # ✅ FIX: use enumerate to get a clean counter (0,1,2) regardless of DataFrame index
+            for counter, (_, row) in enumerate(matched_jobs.iterrows(), start=1):
+                with st.expander(f"Similar Job {counter} — {predicted_category}"):
                     st.markdown(
                         f'<p style="color:#AAAACC; font-size:0.88rem; line-height:1.8;">{row["clean_job"][:600]}...</p>',
                         unsafe_allow_html=True
