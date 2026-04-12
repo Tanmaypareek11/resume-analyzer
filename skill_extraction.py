@@ -2,20 +2,20 @@
 
 import pandas as pd
 import re
+import os
 
-# ✅ Load skills FROM the actual dataset
 def load_skills_from_dataset():
     try:
-        skills_df = pd.read_csv("data/processed_skills.csv")
+        # ✅ Works on both local and Streamlit Cloud
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_path = os.path.join(base_dir, "data", "processed_skills.csv")
 
+        skills_df = pd.read_csv(csv_path)
         all_skills = set()
 
-        # ✅ Loop through every row in the Skills column
         for text in skills_df['Skills'].dropna():
             text = text.lower()
 
-            # Extract known technical skill patterns
-            # Multi-word skills first
             multi_word_skills = [
                 "machine learning", "deep learning", "natural language processing",
                 "data analysis", "data science", "data engineering",
@@ -35,11 +35,10 @@ def load_skills_from_dataset():
                 if skill in text:
                     all_skills.add(skill)
 
-            # Single word skills using regex
             single_word_skills = re.findall(
-                r'\b(python|java|sql|javascript|typescript|php|swift|'
-                r'kotlin|scala|rust|golang|r|c\+\+|'
-                r'tensorflow|keras|pytorch|sklearn|pandas|numpy|'
+                r'\b(python|java|javascript|typescript|php|swift|'
+                r'kotlin|scala|rust|golang|r|'
+                r'tensorflow|keras|pytorch|pandas|numpy|'
                 r'matplotlib|seaborn|plotly|scipy|nltk|spacy|opencv|'
                 r'xgboost|lightgbm|catboost|'
                 r'mysql|postgresql|mongodb|sqlite|cassandra|redis|'
@@ -64,18 +63,22 @@ def load_skills_from_dataset():
 
     except Exception as e:
         print(f"⚠️ Could not load skills dataset: {e}")
-        # Fallback list if CSV not found
+        # ✅ Fallback hardcoded list if CSV not found
         return [
-            "python", "java", "sql", "machine learning",
-            "data analysis", "communication", "leadership"
+            "python", "java", "sql", "machine learning", "deep learning",
+            "data analysis", "communication", "leadership", "marketing",
+            "excel", "nlp", "html", "css", "javascript", "management",
+            "accounting", "finance", "recruitment", "human resource",
+            "hr", "training", "budgeting", "advertising", "social media",
+            "tensorflow", "keras", "pytorch", "scikit-learn", "pandas",
+            "numpy", "tableau", "power bi", "docker", "git"
         ]
 
 
-# ✅ Load skills from dataset when file is imported
+# ✅ Load once when file is imported
 skills_list = load_skills_from_dataset()
 
 
-# ✅ Extract skills from any text using dataset skills
 def extract_skills(text):
     if not text:
         return []
