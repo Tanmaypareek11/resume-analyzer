@@ -8,27 +8,28 @@ import os
 import nltk
 
 # -------------------------------------------------------
-# STEP 1 — Download NLTK data (needed on server)
+# ✅ STEP 1 — PAGE CONFIG MUST BE ABSOLUTE FIRST
+# -------------------------------------------------------
+st.set_page_config(
+    page_title="ResumeIQ — AI Job Match System",
+    page_icon="🧠",
+    layout="wide"
+)
+
+# -------------------------------------------------------
+# ✅ STEP 2 — Download NLTK data (needed on server)
 # -------------------------------------------------------
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
 
 # -------------------------------------------------------
-# STEP 2 — Download datasets from Google Drive FIRST
-#           before any other code runs
+# ✅ STEP 3 — Download datasets from Google Drive
 # -------------------------------------------------------
 from load_data import download_datasets
-
-with st.spinner("⏳ Loading datasets... please wait"):
-    download_datasets()
-#-------------------------------------------------------
-
-# ✅ Step 3 — Safety check inside get_ml_model()
-if not os.path.exists("data\processed_resumes.csv"):
-    download_datasets()
+download_datasets()
 
 # -------------------------------------------------------
-# STEP 4 — Now import everything else
+# ✅ STEP 4 — Import everything else
 # -------------------------------------------------------
 from skill_extraction import extract_skills
 from matcher import skill_match, missing_skills
@@ -37,15 +38,6 @@ from model import train_model, load_model, predict_category, find_matching_jobs
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
-
-# -------------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------------
-st.set_page_config(
-    page_title="ResumeIQ — AI Job Match System",
-    page_icon="🧠",
-    layout="wide"
-)
 
 # -------------------------------------------------------
 # CUSTOM CSS — Professional Dark Theme
@@ -346,14 +338,11 @@ def skill_tags(skills, tag_type=""):
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
-    # ✅ Double check datasets exist before training
     if not os.path.exists("data/processed_resumes.csv"):
         download_datasets()
-
     if os.path.exists("resume_model.pkl"):
         return load_model()
     else:
-        st.info("⏳ Training ML model for the first time — please wait 2-3 minutes...")
         pipeline, _ = train_model()
         return pipeline
 
@@ -464,7 +453,6 @@ if analyze_btn:
         st.markdown('<div class="section-label">Analysis Results</div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">Here is your report</div>', unsafe_allow_html=True)
 
-        # Top Metrics
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             st.metric("🔥 Final Score", f"{final_score}%")
@@ -477,7 +465,6 @@ if analyze_btn:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Result Banner
         if final_score >= 75:
             st.markdown('<div class="result-excellent">🎉 Excellent Match — You are strongly suited for this role. Apply now!</div>', unsafe_allow_html=True)
         elif final_score >= 55:
@@ -489,7 +476,6 @@ if analyze_btn:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Score Breakdown + Skills Side by Side
         col_scores, col_skills = st.columns([1, 1], gap="large")
 
         with col_scores:
@@ -517,7 +503,6 @@ if analyze_btn:
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Similar Jobs from Dataset
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-label">From the Dataset</div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">💼 Similar Job Descriptions</div>', unsafe_allow_html=True)
