@@ -24,7 +24,6 @@ def train_model():
     resume_df = pd.read_csv("data/processed_resumes.csv", low_memory=True)
     resume_df = resume_df.dropna(subset=['clean_resume', 'Category'])
 
-    # Remove categories with very few samples
     category_counts = resume_df['Category'].value_counts()
     valid_categories = category_counts[category_counts >= 10].index
     resume_df = resume_df[resume_df['Category'].isin(valid_categories)]
@@ -38,18 +37,18 @@ def train_model():
 
     pipeline = Pipeline([
         ('tfidf', TfidfVectorizer(
-            max_features=5000,       # ✅ reduced from 10000 — saves RAM, still accurate
+            max_features=5000,
             ngram_range=(1, 2),
             sublinear_tf=True,
             min_df=2,
             max_df=0.95
         )),
         ('clf', RandomForestClassifier(
-            n_estimators=100,        # ✅ reduced from 300 — 3x less RAM, still accurate
-            max_depth=40,            # ✅ limit depth — prevents overfitting + saves RAM
-            min_samples_split=5,     # ✅ slightly higher — prevents tiny splits
-            min_samples_leaf=2,      # ✅ avoids overfitting on rare categories
-            class_weight='balanced', # ✅ keep this — handles imbalanced resume categories
+            n_estimators=100,
+            max_depth=40,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            class_weight='balanced',
             random_state=42,
             n_jobs=-1
         ))
@@ -74,26 +73,54 @@ def load_model():
         return pickle.load(f)
 
 
-def predict_category(text, pipeline):
-    """Predict resume category and return (category, confidence%)."""
+def predict_category(resume_text, job_text, pipeline):
+    """
+    Predicts resume category AND computes how well the job description
+    matches that category — giving a meaningful, variable confidence score.
+
+    Returns: (predicted_category, resume_confidence, category_match_score)
+    - resume_confidence : how sure the model is about the resume category (fixed per resume)
+    - category_match_score : how well the JOB matches the predicted category (varies with job)
+    """
     try:
-        cleaned = clean_text(text)
-        category = pipeline.predict([cleaned])[0]
-        proba = pipeline.predict_proba([cleaned])[0]
-        confidence = round(max(proba) * 100, 2)
-        return category, confidence
+        resume_cleaned = clean_text(resume_text)
+        job_cleaned = clean_text(job_text)
+
+        # Predict category from resume
+        resume_category = pipeline.predict([resume_cleaned])[0]
+        resume_proba = pipeline.predict_proba([resume_cleaned])[0]
+        resume_confidence = round(max(resume_proba) * 100, 2)
+
+        # ✅ KEY FIX: Also predict what category the JOB belongs to
+        job_proba = pipeline.predict_proba([job_cleaned])[0]
+        classes = pipeline.classes_
+
+        # Find probability the job assigns to the same category as resume
+        if resume_category in classes:
+            idx = list(classes).index(resume_category)
+            job_category_prob = job_proba[idx]
+        else:
+            job_category_prob = 0.0
+
+        # ✅ Scale job category match to a meaningful 0-100 range
+        # multiply by number of classes to normalize (since prob is split across N classes)
+        n_classes = len(classes)
+        # If job perfectly matches resume category: job_category_prob = 1/n * dominance
+        # Scale so that average match = ~50, perfect match = ~90+
+        category_match_score = round(
+            min(job_category_prob * n_classes * 30, 95.0), 2
+        )
+
+        return resume_category, resume_confidence, category_match_score
+
     except Exception as e:
         print(f"⚠️ predict_category error: {e}")
-        return "Unknown", 0.0
+        return "Unknown", 0.0, 0.0
 
 
 def find_matching_jobs(predicted_category, top_n=3):
-    """
-    Find job descriptions matching the predicted category.
-    Reads only needed columns + shuffles results so they vary each call.
-    """
+    """Find job descriptions matching the predicted category."""
     try:
-        # Read only the columns we need — much lighter
         try:
             job_df = pd.read_csv(
                 "data/processed_jobs.csv",
@@ -111,7 +138,6 @@ def find_matching_jobs(predicted_category, top_n=3):
         category_lower = predicted_category.lower()
         matched = pd.DataFrame()
 
-        # Try matching by title/category columns
         for col in ['job title', 'title', 'category']:
             if col in job_df.columns:
                 mask = job_df[col].astype(str).str.lower().str.contains(
@@ -121,20 +147,17 @@ def find_matching_jobs(predicted_category, top_n=3):
                 if not matched.empty:
                     break
 
-        # Fallback: keyword search inside clean_job text
         if matched.empty:
             keyword = category_lower.split()[0] if category_lower else ""
             if keyword and len(keyword) > 3:
                 mask = job_df['clean_job'].str.lower().str.contains(keyword, na=False)
                 matched = job_df[mask][['clean_job']]
 
-        # Final fallback: random sample so it never shows same rows
         if matched.empty:
             matched = job_df[['clean_job']].sample(
                 n=min(top_n * 5, len(job_df)), random_state=None
             )
 
-        # Shuffle so different calls return different jobs
         matched = matched.sample(frac=1, random_state=None).reset_index(drop=True)
         return matched.head(top_n)
 
@@ -144,7 +167,6 @@ def find_matching_jobs(predicted_category, top_n=3):
 
 
 def evaluate_model():
-    """Evaluate saved model and print classification report."""
     print("\n" + "="*50)
     print("        MODEL EVALUATION REPORT")
     print("="*50)
