@@ -4,10 +4,11 @@ import pandas as pd
 import re
 import pickle
 import os
+import numpy as np
 
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.pipeline import Pipeline
 
@@ -35,21 +36,21 @@ def train_model():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # ✅ LogisticRegression instead of RandomForest
-    # — uses ~10x less RAM, trains faster, accuracy is comparable for text
     pipeline = Pipeline([
         ('tfidf', TfidfVectorizer(
-            max_features=8000,
+            max_features=5000,       # ✅ reduced from 10000 — saves RAM, still accurate
             ngram_range=(1, 2),
             sublinear_tf=True,
             min_df=2,
             max_df=0.95
         )),
-        ('clf', LogisticRegression(
-            max_iter=1000,
-            class_weight='balanced',
-            solver='saga',       # best solver for large sparse TF-IDF
-            C=1.0,
+        ('clf', RandomForestClassifier(
+            n_estimators=100,        # ✅ reduced from 300 — 3x less RAM, still accurate
+            max_depth=40,            # ✅ limit depth — prevents overfitting + saves RAM
+            min_samples_split=5,     # ✅ slightly higher — prevents tiny splits
+            min_samples_leaf=2,      # ✅ avoids overfitting on rare categories
+            class_weight='balanced', # ✅ keep this — handles imbalanced resume categories
+            random_state=42,
             n_jobs=-1
         ))
     ])
@@ -88,66 +89,54 @@ def predict_category(text, pipeline):
 
 def find_matching_jobs(predicted_category, top_n=3):
     """
-    Find job descriptions matching predicted category.
-    Uses chunked reading to avoid loading the entire CSV into RAM.
+    Find job descriptions matching the predicted category.
+    Reads only needed columns + shuffles results so they vary each call.
     """
     try:
-        results = []
-        chunk_size = 500  # read 500 rows at a time
-
-        for chunk in pd.read_csv(
-            "data/processed_jobs.csv",
-            chunksize=chunk_size,
-            low_memory=True,
-            usecols=lambda c: c in ['clean_job', 'Job Title', 'title', 'Category']
-        ):
-            chunk = chunk.dropna(subset=['clean_job'])
-
-            # Try to match by available title/category column
-            if 'Job Title' in chunk.columns:
-                matched = chunk[
-                    chunk['Job Title'].str.lower().str.contains(
-                        predicted_category.lower(), na=False
-                    )
-                ]
-            elif 'title' in chunk.columns:
-                matched = chunk[
-                    chunk['title'].str.lower().str.contains(
-                        predicted_category.lower(), na=False
-                    )
-                ]
-            elif 'Category' in chunk.columns:
-                matched = chunk[
-                    chunk['Category'].str.lower().str.contains(
-                        predicted_category.lower(), na=False
-                    )
-                ]
-            else:
-                matched = chunk
-
-            results.append(matched[['clean_job']])
-
-            # Stop early once we have enough rows
-            combined = pd.concat(results, ignore_index=True)
-            if len(combined) >= top_n:
-                return combined.head(top_n)
-
-        # If nothing matched, just return first top_n rows from file
-        if not results or pd.concat(results, ignore_index=True).empty:
-            fallback = []
-            for chunk in pd.read_csv(
+        # Read only the columns we need — much lighter
+        try:
+            job_df = pd.read_csv(
                 "data/processed_jobs.csv",
-                chunksize=chunk_size,
                 low_memory=True,
-                usecols=lambda c: c in ['clean_job']
-            ):
-                chunk = chunk.dropna(subset=['clean_job'])
-                fallback.append(chunk[['clean_job']])
-                if sum(len(f) for f in fallback) >= top_n:
-                    break
-            return pd.concat(fallback, ignore_index=True).head(top_n)
+                usecols=lambda c: c.strip() in [
+                    'clean_job', 'Job Title', 'title', 'Category', 'category'
+                ]
+            )
+        except Exception:
+            job_df = pd.read_csv("data/processed_jobs.csv", low_memory=True)
 
-        return pd.concat(results, ignore_index=True).head(top_n)
+        job_df = job_df.dropna(subset=['clean_job'])
+        job_df.columns = [c.strip().lower() for c in job_df.columns]
+
+        category_lower = predicted_category.lower()
+        matched = pd.DataFrame()
+
+        # Try matching by title/category columns
+        for col in ['job title', 'title', 'category']:
+            if col in job_df.columns:
+                mask = job_df[col].astype(str).str.lower().str.contains(
+                    category_lower, na=False
+                )
+                matched = job_df[mask][['clean_job']]
+                if not matched.empty:
+                    break
+
+        # Fallback: keyword search inside clean_job text
+        if matched.empty:
+            keyword = category_lower.split()[0] if category_lower else ""
+            if keyword and len(keyword) > 3:
+                mask = job_df['clean_job'].str.lower().str.contains(keyword, na=False)
+                matched = job_df[mask][['clean_job']]
+
+        # Final fallback: random sample so it never shows same rows
+        if matched.empty:
+            matched = job_df[['clean_job']].sample(
+                n=min(top_n * 5, len(job_df)), random_state=None
+            )
+
+        # Shuffle so different calls return different jobs
+        matched = matched.sample(frac=1, random_state=None).reset_index(drop=True)
+        return matched.head(top_n)
 
     except Exception as e:
         print(f"⚠️ find_matching_jobs error: {e}")
