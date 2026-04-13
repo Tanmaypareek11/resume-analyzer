@@ -5,6 +5,7 @@ import re
 import pdfplumber
 import pickle
 import os
+import gc
 import nltk
 
 # -------------------------------------------------------
@@ -38,7 +39,6 @@ from model import train_model, load_model, predict_category, find_matching_jobs
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
 
 # -------------------------------------------------------
 # CUSTOM CSS — Professional Dark Theme
@@ -314,6 +314,41 @@ def clean_text(text):
     return text.strip()
 
 
+def semantic_similarity(text1, text2):
+    """
+    Lightweight semantic similarity — word + character TF-IDF blend.
+    No model download, no RAM spike. Works on Streamlit free tier.
+    """
+    try:
+        # Limit text length to avoid memory spikes
+        t1 = text1[:3000]
+        t2 = text2[:3000]
+
+        word_vec = TfidfVectorizer(
+            analyzer='word', ngram_range=(1, 2),
+            max_features=5000, sublinear_tf=True
+        )
+        char_vec = TfidfVectorizer(
+            analyzer='char_wb', ngram_range=(3, 4),
+            max_features=5000, sublinear_tf=True
+        )
+        docs = [t1, t2]
+        wm = word_vec.fit_transform(docs)
+        cm = char_vec.fit_transform(docs)
+
+        word_sim = cosine_similarity(wm[0:1], wm[1:2])[0][0]
+        char_sim = cosine_similarity(cm[0:1], cm[1:2])[0][0]
+
+        # Free matrices immediately after use
+        del wm, cm
+        gc.collect()
+
+        combined = (0.65 * word_sim + 0.35 * char_sim) * 100
+        return round(min(combined, 100), 2)
+    except Exception:
+        return 0.0
+
+
 def score_bar(label, value, color):
     st.markdown(f"""
     <div class="score-bar-wrap">
@@ -335,7 +370,7 @@ def skill_tags(skills, tag_type=""):
 
 
 # -------------------------------------------------------
-# CACHED MODELS
+# CACHED MODEL — loaded once, stays in memory
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
@@ -351,12 +386,6 @@ def get_ml_model():
     except Exception as e:
         st.error(f"❌ Failed to load ML model: {e}")
         return None
-
-
-@st.cache_resource
-def get_bert_model():
-    """Load sentence-transformers BERT model."""
-    return SentenceTransformer('all-MiniLM-L6-v2')
 
 
 # -------------------------------------------------------
@@ -422,11 +451,12 @@ if analyze_btn:
                 st.stop()
 
             if not resume_text.strip():
-                st.warning("⚠️ Could not extract text from the PDF. Please ensure it is not a scanned image.")
+                st.warning("⚠️ Could not extract text from your PDF. Please ensure it is not a scanned image-only file.")
                 st.stop()
 
-            resume_clean = clean_text(resume_text)
-            job_clean = clean_text(job_text)
+            # ✅ Limit text length to cap RAM usage
+            resume_clean = clean_text(resume_text)[:5000]
+            job_clean = clean_text(job_text)[:3000]
 
             # ── ML Model ──
             ml_model = get_ml_model()
@@ -441,30 +471,34 @@ if analyze_btn:
             score = skill_match(resume_skills, job_skills)
             missing = missing_skills(resume_skills, job_skills)
 
-            # ── TF-IDF ──
-            vectorizer = TfidfVectorizer()
+            # ── TF-IDF similarity ──
+            vectorizer = TfidfVectorizer(max_features=5000)
             tfidf_matrix = vectorizer.fit_transform([resume_clean, job_clean])
             tfidf_score = round(
                 cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0] * 100, 2
             )
+            # Free immediately
+            del tfidf_matrix, vectorizer
+            gc.collect()
 
-            # ── BERT ──
-            bert_model = get_bert_model()
-            r_emb = bert_model.encode(resume_clean)
-            j_emb = bert_model.encode(job_clean)
-            bert_score = round(
-                cosine_similarity([r_emb], [j_emb])[0][0] * 100, 2
-            )
+            # ── Semantic Similarity ──
+            semantic_score = semantic_similarity(resume_clean, job_clean)
 
-            # ── Normalize & Final Score ──
+            # ── Final Score ──
             tfidf_normalized = min(tfidf_score * 5, 100)
-            final_score = (
-                (0.15 * tfidf_normalized) +
+            final_score = round(min(
+                (0.40 * semantic_score) +
                 (0.30 * score) +
-                (0.40 * bert_score) +
-                (0.15 * confidence)
-            )
-            final_score = round(min(final_score, 100), 2)
+                (0.15 * tfidf_normalized) +
+                (0.15 * confidence),
+                100
+            ), 2)
+
+            # ── Load matching jobs (chunked — low RAM) ──
+            matched_jobs = find_matching_jobs(predicted_category, top_n=3)
+
+            # ✅ Force garbage collection before rendering results
+            gc.collect()
 
         # ── RESULTS ──────────────────────────────────────────
         st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
@@ -499,7 +533,7 @@ if analyze_btn:
         with col_scores:
             st.markdown('<div class="glass-card">', unsafe_allow_html=True)
             st.markdown('<div class="section-label">Score Breakdown</div>', unsafe_allow_html=True)
-            score_bar("BERT Semantic Similarity", bert_score, "linear-gradient(90deg, #6C47FF, #A78BFA)")
+            score_bar("Semantic Similarity", semantic_score, "linear-gradient(90deg, #6C47FF, #A78BFA)")
             score_bar("Skill Match Score", score, "linear-gradient(90deg, #0EA5E9, #38BDF8)")
             score_bar("TF-IDF Text Similarity", tfidf_score, "linear-gradient(90deg, #10B981, #34D399)")
             score_bar("ML Model Confidence", confidence, "linear-gradient(90deg, #F59E0B, #FCD34D)")
@@ -525,13 +559,11 @@ if analyze_btn:
         st.markdown('<div class="section-label">From the Dataset</div>', unsafe_allow_html=True)
         st.markdown('<div class="section-title">💼 Similar Job Descriptions</div>', unsafe_allow_html=True)
 
-        matched_jobs = find_matching_jobs(predicted_category, top_n=3)
         if not matched_jobs.empty:
-            # ✅ FIX: use enumerate to get a clean counter (0,1,2) regardless of DataFrame index
             for counter, (_, row) in enumerate(matched_jobs.iterrows(), start=1):
                 with st.expander(f"Similar Job {counter} — {predicted_category}"):
                     st.markdown(
-                        f'<p style="color:#AAAACC; font-size:0.88rem; line-height:1.8;">{row["clean_job"][:600]}...</p>',
+                        f'<p style="color:#AAAACC; font-size:0.88rem; line-height:1.8;">{row["clean_job"][:400]}...</p>',
                         unsafe_allow_html=True
                     )
         else:
