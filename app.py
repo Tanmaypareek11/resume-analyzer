@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------
-# ✅ STEP 2 — Download NLTK data (needed on server)
+# ✅ STEP 2 — Download NLTK data
 # -------------------------------------------------------
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
@@ -314,39 +314,51 @@ def clean_text(text):
     return text.strip()
 
 
-def semantic_similarity(text1, text2):
+def compute_similarity(text1, text2):
     """
-    Lightweight semantic similarity — word + character TF-IDF blend.
-    No model download, no RAM spike. Works on Streamlit free tier.
+    Fast single-pass TF-IDF similarity using word bigrams.
+    One vectorizer fit on both texts — no double computation.
+    Returns tfidf_score and semantic_score together.
     """
     try:
-        # Limit text length to avoid memory spikes
-        t1 = text1[:3000]
+        t1 = text1[:4000]
         t2 = text2[:3000]
 
+        # ✅ Word-level (content match)
         word_vec = TfidfVectorizer(
-            analyzer='word', ngram_range=(1, 2),
-            max_features=5000, sublinear_tf=True
+            analyzer='word',
+            ngram_range=(1, 2),
+            max_features=6000,
+            sublinear_tf=True
         )
-        char_vec = TfidfVectorizer(
-            analyzer='char_wb', ngram_range=(3, 4),
-            max_features=5000, sublinear_tf=True
-        )
-        docs = [t1, t2]
-        wm = word_vec.fit_transform(docs)
-        cm = char_vec.fit_transform(docs)
-
+        wm = word_vec.fit_transform([t1, t2])
         word_sim = cosine_similarity(wm[0:1], wm[1:2])[0][0]
+
+        # ✅ Character-level (catches partial word matches & morphology)
+        char_vec = TfidfVectorizer(
+            analyzer='char_wb',
+            ngram_range=(3, 4),
+            max_features=4000,
+            sublinear_tf=True
+        )
+        cm = char_vec.fit_transform([t1, t2])
         char_sim = cosine_similarity(cm[0:1], cm[1:2])[0][0]
 
-        # Free matrices immediately after use
+        # tfidf_score = pure word overlap (for the breakdown bar)
+        tfidf_score = round(word_sim * 100, 2)
+
+        # semantic_score = weighted blend of both
+        semantic_score = round(
+            min((0.65 * word_sim + 0.35 * char_sim) * 100, 100), 2
+        )
+
         del wm, cm
         gc.collect()
 
-        combined = (0.65 * word_sim + 0.35 * char_sim) * 100
-        return round(min(combined, 100), 2)
+        return tfidf_score, semantic_score
+
     except Exception:
-        return 0.0
+        return 0.0, 0.0
 
 
 def score_bar(label, value, color):
@@ -374,7 +386,6 @@ def skill_tags(skills, tag_type=""):
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
-    """Load or train the ML classification model."""
     try:
         if not os.path.exists("data/processed_resumes.csv"):
             download_datasets()
@@ -454,11 +465,10 @@ if analyze_btn:
                 st.warning("⚠️ Could not extract text from your PDF. Please ensure it is not a scanned image-only file.")
                 st.stop()
 
-            # ✅ Limit text length to cap RAM usage
             resume_clean = clean_text(resume_text)[:5000]
             job_clean = clean_text(job_text)[:3000]
 
-            # ── ML Model ──
+            # ── ML Model — predicts category from resume ──
             ml_model = get_ml_model()
             if ml_model is not None:
                 predicted_category, confidence = predict_category(resume_clean, ml_model)
@@ -471,18 +481,11 @@ if analyze_btn:
             score = skill_match(resume_skills, job_skills)
             missing = missing_skills(resume_skills, job_skills)
 
-            # ── TF-IDF similarity ──
-            vectorizer = TfidfVectorizer(max_features=5000)
-            tfidf_matrix = vectorizer.fit_transform([resume_clean, job_clean])
-            tfidf_score = round(
-                cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0] * 100, 2
-            )
-            # Free immediately
-            del tfidf_matrix, vectorizer
-            gc.collect()
+            # ── Single-pass similarity (tfidf + semantic together) ──
+            tfidf_score, semantic_score = compute_similarity(resume_clean, job_clean)
 
-            # ── Semantic Similarity ──
-            semantic_score = semantic_similarity(resume_clean, job_clean)
+            # ── Matching jobs (based on predicted category from resume) ──
+            matched_jobs = find_matching_jobs(predicted_category, top_n=3)
 
             # ── Final Score ──
             tfidf_normalized = min(tfidf_score * 5, 100)
@@ -494,10 +497,6 @@ if analyze_btn:
                 100
             ), 2)
 
-            # ── Load matching jobs (chunked — low RAM) ──
-            matched_jobs = find_matching_jobs(predicted_category, top_n=3)
-
-            # ✅ Force garbage collection before rendering results
             gc.collect()
 
         # ── RESULTS ──────────────────────────────────────────
@@ -555,15 +554,16 @@ if analyze_btn:
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
+        # ── Similar Jobs ──
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-label">From the Dataset</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">💼 Similar Job Descriptions</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-title">💼 Similar Jobs — {predicted_category}</div>', unsafe_allow_html=True)
 
         if not matched_jobs.empty:
             for counter, (_, row) in enumerate(matched_jobs.iterrows(), start=1):
-                with st.expander(f"Similar Job {counter} — {predicted_category}"):
+                with st.expander(f"Job {counter} — {predicted_category}"):
                     st.markdown(
-                        f'<p style="color:#AAAACC; font-size:0.88rem; line-height:1.8;">{row["clean_job"][:400]}...</p>',
+                        f'<p style="color:#AAAACC; font-size:0.88rem; line-height:1.8;">{str(row["clean_job"])[:500]}...</p>',
                         unsafe_allow_html=True
                     )
         else:
