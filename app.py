@@ -314,51 +314,67 @@ def clean_text(text):
     return text.strip()
 
 
-def compute_similarity(text1, text2):
+def compute_similarity(resume_text, job_text):
     """
-    Fast single-pass TF-IDF similarity using word bigrams.
-    One vectorizer fit on both texts — no double computation.
-    Returns tfidf_score and semantic_score together.
+    Computes three similarity signals between resume and job description.
+    All scores are amplified and rescaled to spread meaningfully across 0-100.
+
+    Returns: (tfidf_score, semantic_score, keyword_overlap_score)
     """
     try:
-        t1 = text1[:4000]
-        t2 = text2[:3000]
+        r = resume_text[:5000]
+        j = job_text[:3000]
 
-        # ✅ Word-level (content match)
+        # ── 1. Word TF-IDF similarity ──
         word_vec = TfidfVectorizer(
             analyzer='word',
             ngram_range=(1, 2),
             max_features=6000,
             sublinear_tf=True
         )
-        wm = word_vec.fit_transform([t1, t2])
+        wm = word_vec.fit_transform([r, j])
         word_sim = cosine_similarity(wm[0:1], wm[1:2])[0][0]
+        del wm
 
-        # ✅ Character-level (catches partial word matches & morphology)
+        # ── 2. Character TF-IDF similarity ──
         char_vec = TfidfVectorizer(
             analyzer='char_wb',
             ngram_range=(3, 4),
             max_features=4000,
             sublinear_tf=True
         )
-        cm = char_vec.fit_transform([t1, t2])
+        cm = char_vec.fit_transform([r, j])
         char_sim = cosine_similarity(cm[0:1], cm[1:2])[0][0]
+        del cm
 
-        # tfidf_score = pure word overlap (for the breakdown bar)
-        tfidf_score = round(word_sim * 100, 2)
-
-        # semantic_score = weighted blend of both
-        semantic_score = round(
-            min((0.65 * word_sim + 0.35 * char_sim) * 100, 100), 2
-        )
-
-        del wm, cm
         gc.collect()
 
-        return tfidf_score, semantic_score
+        # ── 3. Keyword overlap: % of job words found in resume ──
+        # This is the most sensitive signal to job description changes
+        job_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', j.lower()))
+        resume_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', r.lower()))
+        if job_words:
+            overlap = len(job_words & resume_words) / len(job_words)
+        else:
+            overlap = 0.0
+
+        # ── Raw scores (0-1 range) ──
+        raw_tfidf = word_sim
+        raw_semantic = 0.6 * word_sim + 0.4 * char_sim
+        raw_keyword = overlap
+
+        # ── Amplify: TF-IDF cosine between 2 docs is naturally low (0.05-0.4)
+        # We rescale so that 0.05 → ~25%, 0.20 → ~60%, 0.40 → ~90%
+        # Using square root scaling which spreads the lower end better
+        import math
+        tfidf_score   = round(min(math.sqrt(raw_tfidf) * 100, 100), 2)
+        semantic_score = round(min(math.sqrt(raw_semantic) * 100, 100), 2)
+        keyword_score = round(min(raw_keyword * 100, 100), 2)
+
+        return tfidf_score, semantic_score, keyword_score
 
     except Exception:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
 
 def score_bar(label, value, color):
@@ -382,7 +398,7 @@ def skill_tags(skills, tag_type=""):
 
 
 # -------------------------------------------------------
-# CACHED MODEL — loaded once, stays in memory
+# CACHED MODEL
 # -------------------------------------------------------
 @st.cache_resource
 def get_ml_model():
@@ -465,35 +481,42 @@ if analyze_btn:
                 st.warning("⚠️ Could not extract text from your PDF. Please ensure it is not a scanned image-only file.")
                 st.stop()
 
-            resume_clean = clean_text(resume_text)[:5000]
-            job_clean = clean_text(job_text)[:3000]
+            resume_clean = clean_text(resume_text)
+            job_clean = clean_text(job_text)
 
-            # ── ML Model — predicts category from resume ──
+            # ── ML Model ──
             ml_model = get_ml_model()
             if ml_model is not None:
-                predicted_category, confidence = predict_category(resume_clean, ml_model)
+                # ✅ Pass both resume AND job text — confidence now varies with job
+                predicted_category, resume_confidence, category_match_score = predict_category(
+                    resume_clean, job_clean, ml_model
+                )
             else:
-                predicted_category, confidence = "Unknown", 0.0
+                predicted_category, resume_confidence, category_match_score = "Unknown", 0.0, 0.0
 
             # ── Skills ──
             resume_skills = extract_skills(resume_clean)
             job_skills = extract_skills(job_clean)
-            score = skill_match(resume_skills, job_skills)
+            skill_score = skill_match(resume_skills, job_skills)
             missing = missing_skills(resume_skills, job_skills)
 
-            # ── Single-pass similarity (tfidf + semantic together) ──
-            tfidf_score, semantic_score = compute_similarity(resume_clean, job_clean)
+            # ── Similarity scores (all properly amplified) ──
+            tfidf_score, semantic_score, keyword_score = compute_similarity(
+                resume_clean, job_clean
+            )
 
-            # ── Matching jobs (based on predicted category from resume) ──
+            # ── Matching jobs ──
             matched_jobs = find_matching_jobs(predicted_category, top_n=3)
 
             # ── Final Score ──
-            tfidf_normalized = min(tfidf_score * 5, 100)
+            # Weights: skill_match(30%) + keyword_overlap(25%) + semantic(20%)
+            #          + category_match(15%) + tfidf(10%)
             final_score = round(min(
-                (0.40 * semantic_score) +
-                (0.30 * score) +
-                (0.15 * tfidf_normalized) +
-                (0.15 * confidence),
+                (0.30 * skill_score) +
+                (0.25 * keyword_score) +
+                (0.20 * semantic_score) +
+                (0.15 * category_match_score) +
+                (0.10 * tfidf_score),
                 100
             ), 2)
 
@@ -510,17 +533,18 @@ if analyze_btn:
         with m2:
             st.metric("🤖 Job Category", predicted_category)
         with m3:
-            st.metric("📈 ML Confidence", f"{confidence}%")
+            # ✅ Show category match score here — this varies with job description
+            st.metric("📈 Category Match", f"{category_match_score}%")
         with m4:
-            st.metric("🎯 Skill Match", f"{score}%")
+            st.metric("🎯 Skill Match", f"{skill_score}%")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        if final_score >= 75:
+        if final_score >= 70:
             st.markdown('<div class="result-excellent">🎉 Excellent Match — You are strongly suited for this role. Apply now!</div>', unsafe_allow_html=True)
-        elif final_score >= 55:
+        elif final_score >= 50:
             st.markdown('<div class="result-good">✅ Good Match — You are suitable with a few minor improvements needed.</div>', unsafe_allow_html=True)
-        elif final_score >= 35:
+        elif final_score >= 30:
             st.markdown('<div class="result-good">⚠️ Average Match — Work on the missing skills before applying.</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="result-low">❌ Low Match — Your profile needs significant improvement for this role.</div>', unsafe_allow_html=True)
@@ -532,10 +556,10 @@ if analyze_btn:
         with col_scores:
             st.markdown('<div class="glass-card">', unsafe_allow_html=True)
             st.markdown('<div class="section-label">Score Breakdown</div>', unsafe_allow_html=True)
-            score_bar("Semantic Similarity", semantic_score, "linear-gradient(90deg, #6C47FF, #A78BFA)")
-            score_bar("Skill Match Score", score, "linear-gradient(90deg, #0EA5E9, #38BDF8)")
-            score_bar("TF-IDF Text Similarity", tfidf_score, "linear-gradient(90deg, #10B981, #34D399)")
-            score_bar("ML Model Confidence", confidence, "linear-gradient(90deg, #F59E0B, #FCD34D)")
+            score_bar("Skill Match", skill_score, "linear-gradient(90deg, #6C47FF, #A78BFA)")
+            score_bar("Keyword Overlap", keyword_score, "linear-gradient(90deg, #0EA5E9, #38BDF8)")
+            score_bar("Semantic Similarity", semantic_score, "linear-gradient(90deg, #10B981, #34D399)")
+            score_bar("Category Match", category_match_score, "linear-gradient(90deg, #F59E0B, #FCD34D)")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col_skills:
@@ -554,7 +578,6 @@ if analyze_btn:
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # ── Similar Jobs ──
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-label">From the Dataset</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="section-title">💼 Similar Jobs — {predicted_category}</div>', unsafe_allow_html=True)
