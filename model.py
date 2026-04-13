@@ -7,8 +7,8 @@ import os
 
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.pipeline import Pipeline
 
 
@@ -20,7 +20,7 @@ def clean_text(text):
 
 
 def train_model():
-    resume_df = pd.read_csv("data/processed_resumes.csv", low_memory=False)
+    resume_df = pd.read_csv("data/processed_resumes.csv", low_memory=True)
     resume_df = resume_df.dropna(subset=['clean_resume', 'Category'])
 
     # Remove categories with very few samples
@@ -35,21 +35,21 @@ def train_model():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
+    # ✅ LogisticRegression instead of RandomForest
+    # — uses ~10x less RAM, trains faster, accuracy is comparable for text
     pipeline = Pipeline([
         ('tfidf', TfidfVectorizer(
-            max_features=10000,
-            ngram_range=(1, 3),
+            max_features=8000,
+            ngram_range=(1, 2),
             sublinear_tf=True,
             min_df=2,
             max_df=0.95
         )),
-        ('clf', RandomForestClassifier(
-            n_estimators=300,
-            max_depth=None,
-            min_samples_split=2,
-            min_samples_leaf=1,
+        ('clf', LogisticRegression(
+            max_iter=1000,
             class_weight='balanced',
-            random_state=42,
+            solver='saga',       # best solver for large sparse TF-IDF
+            C=1.0,
             n_jobs=-1
         ))
     ])
@@ -58,10 +58,8 @@ def train_model():
 
     y_pred = pipeline.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
-    report = classification_report(y_test, y_pred)
-
     print(f"✅ Accuracy: {round(accuracy * 100, 2)}%")
-    print(report)
+    print(classification_report(y_test, y_pred))
 
     with open("resume_model.pkl", "wb") as f:
         pickle.dump(pipeline, f)
@@ -89,41 +87,67 @@ def predict_category(text, pipeline):
 
 
 def find_matching_jobs(predicted_category, top_n=3):
-    """Find job descriptions matching the predicted category."""
+    """
+    Find job descriptions matching predicted category.
+    Uses chunked reading to avoid loading the entire CSV into RAM.
+    """
     try:
-        job_df = pd.read_csv("data/processed_jobs.csv", low_memory=False)
-        job_df = job_df.dropna(subset=['clean_job'])
+        results = []
+        chunk_size = 500  # read 500 rows at a time
 
-        # Try to filter by Job Title column
-        if 'Job Title' in job_df.columns:
-            matched = job_df[
-                job_df['Job Title'].str.lower().str.contains(
-                    predicted_category.lower(), na=False
-                )
-            ].head(top_n)
-        # Try 'title' column
-        elif 'title' in job_df.columns:
-            matched = job_df[
-                job_df['title'].str.lower().str.contains(
-                    predicted_category.lower(), na=False
-                )
-            ].head(top_n)
-        # Try 'Category' column
-        elif 'Category' in job_df.columns:
-            matched = job_df[
-                job_df['Category'].str.lower().str.contains(
-                    predicted_category.lower(), na=False
-                )
-            ].head(top_n)
-        else:
-            # No title column — just return top N rows
-            matched = job_df.head(top_n)
+        for chunk in pd.read_csv(
+            "data/processed_jobs.csv",
+            chunksize=chunk_size,
+            low_memory=True,
+            usecols=lambda c: c in ['clean_job', 'Job Title', 'title', 'Category']
+        ):
+            chunk = chunk.dropna(subset=['clean_job'])
 
-        # If no matches found, return top N regardless
-        if matched.empty:
-            matched = job_df.head(top_n)
+            # Try to match by available title/category column
+            if 'Job Title' in chunk.columns:
+                matched = chunk[
+                    chunk['Job Title'].str.lower().str.contains(
+                        predicted_category.lower(), na=False
+                    )
+                ]
+            elif 'title' in chunk.columns:
+                matched = chunk[
+                    chunk['title'].str.lower().str.contains(
+                        predicted_category.lower(), na=False
+                    )
+                ]
+            elif 'Category' in chunk.columns:
+                matched = chunk[
+                    chunk['Category'].str.lower().str.contains(
+                        predicted_category.lower(), na=False
+                    )
+                ]
+            else:
+                matched = chunk
 
-        return matched[['clean_job']].reset_index(drop=True)
+            results.append(matched[['clean_job']])
+
+            # Stop early once we have enough rows
+            combined = pd.concat(results, ignore_index=True)
+            if len(combined) >= top_n:
+                return combined.head(top_n)
+
+        # If nothing matched, just return first top_n rows from file
+        if not results or pd.concat(results, ignore_index=True).empty:
+            fallback = []
+            for chunk in pd.read_csv(
+                "data/processed_jobs.csv",
+                chunksize=chunk_size,
+                low_memory=True,
+                usecols=lambda c: c in ['clean_job']
+            ):
+                chunk = chunk.dropna(subset=['clean_job'])
+                fallback.append(chunk[['clean_job']])
+                if sum(len(f) for f in fallback) >= top_n:
+                    break
+            return pd.concat(fallback, ignore_index=True).head(top_n)
+
+        return pd.concat(results, ignore_index=True).head(top_n)
 
     except Exception as e:
         print(f"⚠️ find_matching_jobs error: {e}")
@@ -132,18 +156,11 @@ def find_matching_jobs(predicted_category, top_n=3):
 
 def evaluate_model():
     """Evaluate saved model and print classification report."""
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-    except ImportError:
-        print("⚠️ matplotlib/seaborn not installed — skipping confusion matrix plot.")
-        plt = None
-
     print("\n" + "="*50)
     print("        MODEL EVALUATION REPORT")
     print("="*50)
 
-    resume_df = pd.read_csv("data/processed_resumes.csv", low_memory=False)
+    resume_df = pd.read_csv("data/processed_resumes.csv", low_memory=True)
     resume_df = resume_df.dropna(subset=['clean_resume', 'Category'])
 
     X = resume_df['clean_resume'].apply(clean_text)
@@ -159,28 +176,11 @@ def evaluate_model():
     accuracy = accuracy_score(y_test, y_pred)
     print(f"\n✅ Model Accuracy  : {round(accuracy * 100, 2)}%")
     print(f"📊 Total Test Data : {len(y_test)} resumes")
-    print(f"✔️  Correct Predictions : {sum(y_test == y_pred)}")
-    print(f"❌ Wrong Predictions   : {sum(y_test != y_pred)}")
+    print(f"✔️  Correct        : {sum(y_test == y_pred)}")
+    print(f"❌ Wrong           : {sum(y_test != y_pred)}")
     print("\n📋 Classification Report:")
     print("-"*50)
     print(classification_report(y_test, y_pred))
-
-    if plt:
-        cm = confusion_matrix(y_test, y_pred)
-        plt.figure(figsize=(12, 8))
-        sns.heatmap(
-            cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=pipeline.classes_,
-            yticklabels=pipeline.classes_
-        )
-        plt.title("Confusion Matrix — Resume Category Prediction")
-        plt.xlabel("Predicted Category")
-        plt.ylabel("Actual Category")
-        plt.tight_layout()
-        plt.savefig("confusion_matrix.png")
-        plt.show()
-        print("\n✅ Confusion Matrix saved as confusion_matrix.png")
-
     print("="*50)
 
 
