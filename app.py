@@ -487,12 +487,9 @@ if analyze_btn:
             # ── ML Model ──
             ml_model = get_ml_model()
             if ml_model is not None:
-                # ✅ Pass both resume AND job text — confidence now varies with job
-                predicted_category, resume_confidence, category_match_score = predict_category(
-                    resume_clean, job_clean, ml_model
-                )
+                predicted_category, confidence = predict_category(resume_clean, ml_model)
             else:
-                predicted_category, resume_confidence, category_match_score = "Unknown", 0.0, 0.0
+                predicted_category, confidence = "Unknown", 0.0
 
             # ── Skills ──
             resume_skills = extract_skills(resume_clean)
@@ -510,12 +507,12 @@ if analyze_btn:
 
             # ── Final Score ──
             # Weights: skill_match(30%) + keyword_overlap(25%) + semantic(20%)
-            #          + category_match(15%) + tfidf(10%)
+            #          + ml_confidence(15%) + tfidf(10%)
             final_score = round(min(
                 (0.30 * skill_score) +
                 (0.25 * keyword_score) +
                 (0.20 * semantic_score) +
-                (0.15 * category_match_score) +
+                (0.15 * confidence) +
                 (0.10 * tfidf_score),
                 100
             ), 2)
@@ -533,8 +530,7 @@ if analyze_btn:
         with m2:
             st.metric("🤖 Job Category", predicted_category)
         with m3:
-            # ✅ Show category match score here — this varies with job description
-            st.metric("📈 Category Match", f"{category_match_score}%")
+            st.metric("📈 ML Confidence", f"{confidence}%")
         with m4:
             st.metric("🎯 Skill Match", f"{skill_score}%")
 
@@ -559,7 +555,7 @@ if analyze_btn:
             score_bar("Skill Match", skill_score, "linear-gradient(90deg, #6C47FF, #A78BFA)")
             score_bar("Keyword Overlap", keyword_score, "linear-gradient(90deg, #0EA5E9, #38BDF8)")
             score_bar("Semantic Similarity", semantic_score, "linear-gradient(90deg, #10B981, #34D399)")
-            score_bar("Category Match", category_match_score, "linear-gradient(90deg, #F59E0B, #FCD34D)")
+            score_bar("ML Confidence", confidence, "linear-gradient(90deg, #F59E0B, #FCD34D)")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col_skills:
