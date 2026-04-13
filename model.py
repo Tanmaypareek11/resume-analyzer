@@ -73,49 +73,38 @@ def load_model():
         return pickle.load(f)
 
 
-def predict_category(resume_text, job_text, pipeline):
+def predict_category(text, pipeline):
     """
-    Predicts resume category AND computes how well the job description
-    matches that category — giving a meaningful, variable confidence score.
-
-    Returns: (predicted_category, resume_confidence, category_match_score)
-    - resume_confidence : how sure the model is about the resume category (fixed per resume)
-    - category_match_score : how well the JOB matches the predicted category (varies with job)
+    Predict resume category and return (category, confidence%).
+    Confidence is rescaled so it reads meaningfully even when RandomForest
+    spreads probability across many balanced classes.
     """
     try:
-        resume_cleaned = clean_text(resume_text)
-        job_cleaned = clean_text(job_text)
+        cleaned = clean_text(text)
+        category = pipeline.predict([cleaned])[0]
+        proba = pipeline.predict_proba([cleaned])[0]
 
-        # Predict category from resume
-        resume_category = pipeline.predict([resume_cleaned])[0]
-        resume_proba = pipeline.predict_proba([resume_cleaned])[0]
-        resume_confidence = round(max(resume_proba) * 100, 2)
+        n_classes = len(proba)
+        top_prob = max(proba)
 
-        # ✅ KEY FIX: Also predict what category the JOB belongs to
-        job_proba = pipeline.predict_proba([job_cleaned])[0]
-        classes = pipeline.classes_
+        # RandomForest with class_weight='balanced' and N classes gives raw
+        # top_prob around 1/N to 3/N (e.g. 25 classes → 4% to 12% raw).
+        # We rescale so:
+        #   random guess (1/N)   → ~20%
+        #   clear winner (3/N+)  → ~60-90%
+        # Formula: normalize against random baseline then scale to 0-100
+        random_baseline = 1.0 / n_classes
+        # How many times better than random is this prediction?
+        dominance = top_prob / random_baseline   # 1.0 = random, 3.0+ = confident
+        # Map dominance [1, N] → confidence [20, 95]
+        confidence = 20 + (dominance - 1) / (n_classes - 1) * 75
+        confidence = round(min(max(confidence, 20.0), 95.0), 2)
 
-        # Find probability the job assigns to the same category as resume
-        if resume_category in classes:
-            idx = list(classes).index(resume_category)
-            job_category_prob = job_proba[idx]
-        else:
-            job_category_prob = 0.0
-
-        # ✅ Scale job category match to a meaningful 0-100 range
-        # multiply by number of classes to normalize (since prob is split across N classes)
-        n_classes = len(classes)
-        # If job perfectly matches resume category: job_category_prob = 1/n * dominance
-        # Scale so that average match = ~50, perfect match = ~90+
-        category_match_score = round(
-            min(job_category_prob * n_classes * 30, 95.0), 2
-        )
-
-        return resume_category, resume_confidence, category_match_score
+        return category, confidence
 
     except Exception as e:
         print(f"⚠️ predict_category error: {e}")
-        return "Unknown", 0.0, 0.0
+        return "Unknown", 0.0
 
 
 def find_matching_jobs(predicted_category, top_n=3):
