@@ -129,4 +129,3 @@ Python · Streamlit · Scikit-learn · pdfplumber
 
 ---
 
-> Made with ❤️ for job seekers — know your match before you apply.
